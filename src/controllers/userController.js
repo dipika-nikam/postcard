@@ -1,14 +1,13 @@
-// controller/userController.js
 const express = require("express");
 const app = express()
 const User = require('../models/userModel');
+const Postcard = require('../models/postcardModel')
 const bcrypt = require('bcrypt');
-const axios = require('axios');
 const jwt = require('jsonwebtoken');
 const fetch = require('node-fetch');
-const Joi = require("joi");
-const helper  = require('../services/helper');
+const helper = require('../services/helper');
 const moment = require('moment');
+const errorHandle = require('../services/errorHendler')
 
 require('dotenv').config();
 app.use(express.json())
@@ -17,7 +16,10 @@ app.use(express.urlencoded({ extended: false }))
 exports.loginUser = async (req, res) => {
     try {
         const { email, password } = req.body;
-        const user = await User.User.findOne({ email });
+        const user = await User.findOne({ email });
+        if (!email || !password) {
+            return res.status(401).json({ success: false, message: "Email and password are required for login" });
+        }
         if (!user) {
             return res.status(401).json({ success: false, message: 'You are not register user' });
         }
@@ -37,182 +39,79 @@ exports.loginUser = async (req, res) => {
             { expiresIn: "15h" }
         );
 
-        res.status(200).json({ success: true, data: req.body, token: accessToken, message: "You are login sucessfully" });
-    }catch (error) {
-        res.status(500).json({ success: false, message: 'Email and password not valid' });
+        res.status(200).json({ success: true, data: { email: email, password: password, accessToken: accessToken }, message: "You are login sucessfully" });
+    } catch (error) {
+        res.status(400).json({ success: false, message: 'Email and password not valid' });
     }
 }
 
-
-const postcard = Joi.object({
-    recipientname: Joi.string()
-      .regex(/^[A-Za-z]+(?: [A-Za-z0-9.,()\-]+)*$/)
-      .trim()
-      .required(),
-    address1: Joi.string().required(),
-    address2: Joi.string(),
-    city:Joi.string().required(),
-    state: Joi.string().required(),
-    zipcode: Joi.string().required(),
-    message: Joi.string().required(),
-    
-});
-
 exports.createPostcard = async (req, res) => {
     try {
-        const { error, value } = postcard.validate(req.body);
-        if (error){
-            if (error.message.includes('"recipientname"')){
-                if (error.message.includes('"recipientname" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'Recipient name is required please add Recipient name.',
-                    });
-                }
-                return res.status(422).json({
-                    success : false,
-                    message: 'Recipient names must begin with a letter and only include letters.',
-                })
-            }else if (error.message.includes('"address1"')){
-                if (error.message.includes('"address1" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'Address is required please add address.',
-                    });
-                }
-            }else if (error.message.includes('"city"')){
-                if (error.message.includes('"city" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'City is required please add City.',
-                    });
-                }
-            }else if (error.message.includes('"state"')){
-                if (error.message.includes('"state" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'State is required please add satate.',
-                    });
-                }
-            }else if (error.message.includes('"zipcode"')){
-                if (error.message.includes('"zipcode" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'Zipcode is required please add code.',
-                    });
-                }
-            }else if (error.message.includes('"message"')){
-                if (error.message.includes('"message" is required')){
-                    return res.status(422).json({
-                      success : false,
-                      message: 'message is required please add message.',
-                    });
-                }
-            }
-        }else{
-            const { recipientname, address1, address2, city, state, zipcode, message } = req.body;
-            const { uniqueId, uniqueLink,  expiryTimestamp } = helper.generateUniqueLink();
-            const file = req.file;
-            const url = new URL('https://api.zipcodestack.com/v1/search');
-            const params = {
-                codes: zipcode,
-            };
-            Object.keys(params).forEach(key => url.searchParams.append(key, params[key]));
-
-            const headers = {
-                'apikey': '01HNCGGFBYGYHE7W7812W5FCMD',
-                'Accept': 'application/json',
-            };
-            const response = await fetch(url, {
-                method: 'GET',
-                headers,
+        const { error, value } = helper.postcard.validate(req.body);
+        if (error) {
+            const responseMessage = errorHandle.handleValidationError(error);
+            return res.status(422).json({
+                success: false,
+                message: responseMessage,
             });
-            const responseData = await response.json();
+        }
+        const {
+            recipientname, address1, address2, city, state, zipcode, message
+        } = req.body;
+        const { uniqueId, uniqueLink, expiryTimestamp } = helper.generateUniqueLink();
+        const file = req.file;
+        try {
+            const zipCodeInfo = await helper.fetchZipCodeInfo(zipcode);
             const capitalizedState = state.charAt(0).toUpperCase() + state.slice(1);
-            const zipCodeInfo = responseData.results[zipcode];
-            if (zipCodeInfo && zipCodeInfo.length > 0) {
-                const matchingAddress = zipCodeInfo.find(address => 
-                    address.state === capitalizedState &&
-                    address.postal_code === zipcode
+
+            if (zipCodeInfo.length > 0) {
+                const matchingAddress = zipCodeInfo.find(address =>
+                    address.state === capitalizedState && address.postal_code === zipcode
                 );
                 if (matchingAddress) {
-                    if (!file) {
-                        const newPostCardData = {
-                            recipientname,
-                            address1,
-                            address2,
-                            city,
-                            state,
-                            zipcode,
-                            message,
-                            preview: uniqueLink
-                        };
-                
-                        const newPostCard = await User.PostCard.create({
-                            id: uniqueId,
-                            expires_at:expiryTimestamp,
-                            ...newPostCardData,
-                        });
-                        res.json({ success: true, data: newPostCardData, message: 'Postcard sent successfully' });   
-
-                    }else{
-                        try{
-                            if (!file.mimetype.startsWith('image')) {
-                                throw new Error('Invalid image file');
-                            }
-                            const filePath = 'uploads/' + file.filename;  
-                            const newPostCardData = {
-                                recipientname,
-                                address1,
-                                address2,
-                                city,
-                                state,
-                                zipcode,
-                                message,
-                                images: filePath,
-                                preview: uniqueLink
-                            };
-                    
-                            const newPostCard = await User.PostCard.create({
-                                id: uniqueId,
-                                expires_at:expiryTimestamp,
-                                ...newPostCardData,
-                            });
-                            res.json({ success: true, data: newPostCardData, message: 'Postcard sent successfully' });   
-                        }catch(error){
-                            console.error(error);
-                            res.status(422).json({
-                                success: false,
-                                message: 'Error processing the file',
-                            });
-                        }                  
+                    const newPostCardData = {
+                        recipientname, address1, address2, city, state, zipcode, message, preview: uniqueLink
+                    };
+                    if (file) {
+                        errorHandle.handleFileError(file);
+                        const filePath = `uploads/${file.filename}`;
+                        newPostCardData.images = filePath;
                     }
+                    const newPostCard = await  Postcard.create({
+                        id: uniqueId,
+                        expires_at: expiryTimestamp,
+                        ...newPostCardData,
+                    });
+                    return res.json({
+                        success: true,
+                        data: newPostCardData,
+                        message: 'Postcard sent successfully'
+                    });
                 } else {
-                    res.json({ success: false, message: 'Address does not match with ZIP code information' });
+                    return res.json({ success: false, message: 'Address does not match with ZIP code information' });
                 }
             } else {
-                res.json({ success: false, message: 'ZIP code does not exist' });
+                return res.json({ success: false, message: 'ZIP code does not exist' });
             }
+        } catch (error) {
+            console.error(error);
+            return res.status(422).json({
+                success: false,
+                message: 'Error processing the file',
+            });
         }
     } catch (error) {
-        console.error(error);
         if (error.message.includes('zipcode')) {
-            res.status(404).json({ success: false, message: 'Please add a minimum 5-digit zipcode' });
+            return res.status(404).json({ success: false, message: 'Please add a minimum 5-digit zipcode' });
         }
-        res.status(500).json({ success: false, message: 'Error processing the request' });
+        return res.status(500).json({ success: false, message: 'Error processing the request' });
     }
 };
 
-const postcardSearchSchema = Joi.object({
-    search: Joi.string().allow(''),
-    page: Joi.number().integer().min(1).default(1),
-    pageSize: Joi.number().integer().min(1).default(10),
-    limit: Joi.number().integer().min(1),
-});
-
 exports.GetallPostcard = async(req,res) =>{
     try {
-        const { error: validationError, value: searchParams } = postcardSearchSchema.validate(req.query);
+        const { error: validationError, value: searchParams } = helper.postcardSearchSchema.validate(req.query);
+        const user_id = req.user.id
         if (validationError) {
             return res.status(422).json({
                 success: false,
@@ -221,20 +120,19 @@ exports.GetallPostcard = async(req,res) =>{
         }
 
         const { search, page, pageSize, limit } = searchParams;
-
+        
         let postcards;
         let nextPage;
         let prevPage;
-
         if (search) {
             postcards = await helper.searchPostcards(search, page, pageSize, limit);
         } else {
-            postcards = await helper.getPostcards(page, pageSize);
+            postcards = await helper.getPostcards(page, pageSize, limit);
         }
         if (!postcards || postcards.length === 0) {
             return res.status(200).json({ success: true, message: `Does not find any data according to   ${search}` });
         }
-        const totalPostcardsCount = await User.PostCard.countDocuments();
+        const totalPostcardsCount = await Postcard.countDocuments();
         const totalPages = Math.ceil(totalPostcardsCount / pageSize);
         if (search) {
             if (page <= totalPages || totalPages === 1) {
@@ -245,17 +143,13 @@ exports.GetallPostcard = async(req,res) =>{
                 prevPage = `/api/get/postcard/?page=${page - 1}&search=${search}`;
             }
             const formattedPostcards = postcards.map(postcard => {
-                const { id, expires_at, ...rest } = postcard._doc;
+                const { id, user_id, expires_at,__v, ...rest } = postcard._doc;
                 return rest;
             });
             res.json({
                 success: true,
-                links: {
-                    next: nextPage,
-                    previous: prevPage,
-                },
                 data: formattedPostcards,
-                totalPages: totalPages,
+                message: "Retrieved postcard sucessfully"
             });
         }else{
             if (page <= totalPages || totalPages === 1) {
@@ -266,17 +160,13 @@ exports.GetallPostcard = async(req,res) =>{
                 prevPage = `/api/get/postcard/?page=${page - 1}`;
             }
             const formattedPostcards = postcards.map(postcard => {
-                const { id, expires_at, ...rest } = postcard._doc;
+                const { id, user_id,expires_at,__v, ...rest } = postcard._doc;
                 return rest;
             });
             res.json({
                 success: true,
-                links: {
-                    next: nextPage,
-                    previous: prevPage,
-                },
                 data: formattedPostcards,
-                totalPages: totalPages,
+                message: "Retrieved postcard sucessfully"
             });        }
     } catch (error) {
         console.error(error);
@@ -287,28 +177,25 @@ exports.GetallPostcard = async(req,res) =>{
 exports.GetallPostcardlink = async (req, res) => {
     try {
         const { counter } = req.params;
-        const filter = { id: counter };
-
-        const postCard = await User.PostCard.findOne({ id: counter });
+        if (!counter) {
+            return res.status(400).json({ success: false, error: 'Invalid counter parameter' });
+        }
+        const postCard = await Postcard.findOne({ id: counter });
 
         if (!postCard) {
-            return res.status(404).json({ error: 'Postcard not found' });
+            return res.status(404).json({ success: false, error: 'Postcard not found' });
         }
-        if (postCard.expires_at && moment().isAfter(moment(postCard.expires_at))) {
-            return res.status(404).json({ error: 'Postcard has expired' });
+        const currentMoment = moment();
+        if (postCard.expires_at && currentMoment.isAfter(moment(postCard.expires_at))) {
+            return res.status(419).json({ success: false, error: 'Postcard has expired' });
         }
-
-        postCard.accessCounter = postCard.accessCounter || 0;
-        postCard.accessCounter += 1;
-
+        postCard.accessCounter = (postCard.accessCounter || 0) + 1;
         await postCard.save();
-
         const responseObject = {
             message: 'Postcard opened successfully',
             open_count: postCard.open_count,
             success: true,
-            data: {
-                recipientname: postCard.recipientname,
+            data: {recipientname: postCard.recipientname,
                 address1: postCard.address1,
                 address2: postCard.address2,
                 city: postCard.city,
@@ -316,22 +203,19 @@ exports.GetallPostcardlink = async (req, res) => {
                 zipcode: postCard.zipcode,
                 message: postCard.message,
                 images: postCard.images,
-                preview: postCard.preview,
-                accessCounter: postCard.accessCounter,
-            },
+                accessCounter: postCard.accessCounter,},
         };
 
-        res.json(responseObject);
+        res.status(201).json(responseObject);
     } catch (error) {
         console.error(error);
-        res.status(500).json({ success: false, message: 'Error processing the request' });
+        res.status(500).json({ success: false, error: 'Error processing the request' });
     }
 };
 
-exports.updatePostcardLink = async (req, res) => {
+exports.updatePostcardLink = async ({ params: { id } }, res) => {
     try {
-        const { id } = req.params;
-        const postcard = await User.PostCard.findById(id);
+        const postcard = await Postcard.findById(id);
 
         if (!postcard) {
             return res.status(404).json({ success: false, message: 'Postcard not found' });
@@ -342,26 +226,14 @@ exports.updatePostcardLink = async (req, res) => {
         postcard.preview = uniqueLink;
         postcard.expires_at = new Date(expiryTimestamp);
         await postcard.save();
+
         const response = {
             success: true,
-            data: {
-                // Omitting "id" from the data object
-                _id: postcard._id,
-                recipientname: postcard.recipientname,
-                address1: postcard.address1,
-                address2: postcard.address2,
-                city: postcard.city,
-                state: postcard.state,
-                zipcode: postcard.zipcode,
-                message: postcard.message,
-                images: postcard.images,
-                preview: postcard.preview,
-                accessCounter: postcard.accessCounter,
-                expires_at: postcard.expires_at,
-            },
+            data: { _id: postcard._id, preview: postcard.preview, accessCounter: postcard.accessCounter, expires_at: postcard.expires_at },
             message: 'Postcard link updated successfully',
         };
-        res.json(response   );
+
+        res.json(response);
     } catch (error) {
         console.error(error);
         res.status(500).json({ success: false, message: 'Error processing the request' });

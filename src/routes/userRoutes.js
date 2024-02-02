@@ -8,8 +8,8 @@ const verifyToken = require('../middleware/authMiddleware')
 router.post('/login', user.loginUser);
 
 router.use(verifyToken);
-router.post('/postcard', upload.single('background_image'), user.createPostcard);
-router.get('/get/postcard', user.GetallPostcard);
-router.get('/get/:counter', user.GetallPostcardlink);
-router.get('/get/link/:id', user.updatePostcardLink)
+router.post('/add-postcard', upload.single('background_image'), user.createPostcard);
+router.get('/all/postcard', user.GetallPostcard);
+router.get('/link/:counter', user.GetallPostcardlink);
+router.put('/link/:id', user.updatePostcardLink)
 module.exports = router;
